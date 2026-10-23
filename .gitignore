@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 测试本机开发用，不随仓库分发
+tests/
+pytest.ini
+
+# 打好的插件包
+*.zip

@@ -1,0 +1,15 @@
+name: astrbot_plugin_ai_being
+author: MoeDawn
+version: 0.0.1
+desc: 让 mineflayer 驱动的 AI 实体在 Minecraft 里活动，并支持游戏内点名与定时心跳唤醒
+display_name: AI 实体
+main: main.py
+repo: https://github.com/MoeDawn/astrbot_plugin_ai_being
+short_desc: AI 实体（mineflayer）与 QQ 群双向联通
+astrbot_version: ">=4.16,<5"
+support_platforms:
+  - aiocqhttp
+tags:
+  - Minecraft
+  - mineflayer
+  - AI实体

@@ -1,0 +1,105 @@
+{
+  "enable": {
+    "description": "启用 AI 实体:轮询 MCP 事件、注入唤醒、同步发言到群",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后本插件完全不动作,NetherLink 不受影响"
+  },
+  "mcp_server_name": {
+    "description": "AstrBot 里连接 mineflayer MCP 服务时填的名字",
+    "type": "string",
+    "default": "",
+    "hint": "留空则按「只有一个 MCP 服务」自动选取;多于一个时必须填,否则不启动轮询"
+  },
+  "entity_name": {
+    "description": "AI 实体在游戏里的登录名",
+    "type": "string",
+    "default": "",
+    "hint": "留空则无法识别它自己的发言:自唤醒防护与它的死亡/上线播报都会失效,启动时会记一条错误日志。按名字精确匹配,大小写不敏感"
+  },
+  "group_id": {
+    "description": "唤醒与同步发往哪个 QQ 群",
+    "type": "string",
+    "default": "",
+    "hint": "填群号,不是群名。留空则既不唤醒也不同步,启动时会记一条警告"
+  },
+  "qq_platform_id": {
+    "description": "发送用的机器人平台标识",
+    "type": "string",
+    "default": "",
+    "hint": "留空自动在 aiocqhttp 适配器里反查;多机器人部署时务必显式填"
+  },
+  "poll_interval": {
+    "description": "事件轮询间隔(秒)",
+    "type": "int",
+    "default": 60,
+    "hint": "最小 5 秒。太快只是把 MCP 打满,拿不到更快的事件"
+  },
+  "poll_types": {
+    "description": "轮询哪些事件类型",
+    "type": "list",
+    "default": [
+      "chat",
+      "death",
+      "login",
+      "playerJoined",
+      "playerLeft",
+      "whisper"
+    ],
+    "hint": "不必填 health 这类高频类型。death/login 是它自己的死亡与上线,不是别人"
+  },
+  "wake_words": {
+    "description": "游戏内聊天里出现任一即唤醒 AI",
+    "type": "list",
+    "default": [],
+    "hint": "留空 = 不按关键词唤醒(私聊与定时心跳仍然有效)。英文不区分大小写;这是字面匹配,不是语义判断"
+  },
+  "wake_cooldown": {
+    "description": "两次唤醒注入的最小间隔(秒)",
+    "type": "int",
+    "default": 30,
+    "hint": "防止连续刷屏把 LLM 打满;同一次轮询里被点名的多条会合并成一次唤醒"
+  },
+  "wake_template": {
+    "description": "游戏内被点名时发送给 AI 的提示词",
+    "type": "text",
+    "default": "游戏里有动静,可能需要你回应:\n{events}\n先判断是不是在叫你。是的话用 chat 工具在游戏里回一句,必要时也在这里说一声;\n不是的话保持安静,什么都不用做。",
+    "hint": "占位符:{entity}、{events}"
+  },
+  "heartbeat_cron": {
+    "description": "自主心跳周期(分 时 日 月 周)",
+    "type": "string",
+    "default": "*/30 * * * *",
+    "hint": "默认每 30 分钟一次。留空关闭心跳;静默时段内心跳不触发"
+  },
+  "heartbeat_prompt": {
+    "description": "心跳时发送给 AI 的提示词",
+    "type": "text",
+    "default": "现在没有人叫你。先了解现场(血量、饥饿、坐标、背包、附近实体),再做你想做的事。\n优先保命:饥饿值低就吃东西,血量低先回血,装备没穿齐先穿上,工具不够就想办法。\n可以散步、采集、钓鱼、整理箱子、烧矿、跟人、看风景;做完就停。\n只有值得说的才在群里说一句,其余保持沉默。\n不要修改世界,不要使用管理指令。\n最近游戏内动态:\n{events}",
+    "hint": "占位符:{entity} 它的名字、{events} 这段时间的游戏内动态、{state} 在线状态"
+  },
+  "quiet_hours": {
+    "description": "静默时段(整点,含头不含尾)",
+    "type": "string",
+    "default": "0-7",
+    "hint": "留空不静默;静默只压制心跳,被点名仍会唤醒。与 heartbeat_cron 重叠时以本项为准"
+  },
+  "own_event_template": {
+    "description": "它本人死亡 / 上线时同步到群的格式",
+    "type": "string",
+    "default": "{entity} {event}",
+    "hint": "占位符:{entity}、{event}(死亡/进入了服务器)、{detail}(死亡坐标)"
+  },
+  "self_wake_guard": {
+    "description": "自唤醒防护窗口(秒)",
+    "type": "int",
+    "default": 10,
+    "hint": "它刚说过的话在这段时间内不会唤醒自己。用于防止它说的话里恰好带唤醒词时自言自语"
+  },
+  "mcp_timeout": {
+    "description": "单次 MCP 调用超时(秒)",
+    "type": "int",
+    "default": 20,
+    "hint": "超时按失败计,不重置游标"
+  }
+}
