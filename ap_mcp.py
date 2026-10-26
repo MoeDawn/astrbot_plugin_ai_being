@@ -23,11 +23,18 @@ class McpError(Exception):
     """MCP 调用失败：连接不在、服务端 isError、超时、结果无法解析。"""
 
 
+class McpAmbiguousError(McpError):
+    """有多个 MCP 服务且没有指定用哪个 —— 配置错误，不是网络抖动。"""
+
+
 def resolve_client(tool_manager, wanted: str):
     """从 AstrBot 的 MCP 连接表里找一具客户端。
 
     返回 `(server_name, client)`。`wanted` 留空时**只有恰好一个服务**才自动
     选取 —— 有歧义就抛错，绝不「随便挑一个」（挑错就是往另一具实体发指令）。
+
+    ⚠️ `wanted` 生产调用恒传空串；保留该形参只为测试与将来扩展，
+    不代表存在可配置的 MCP 服务名。
     """
     try:
         table = tool_manager.mcp_client_dict
@@ -40,15 +47,16 @@ def resolve_client(tool_manager, wanted: str):
     if wanted:
         if wanted not in table:
             raise McpError(
-                "配置的 mcp_server_name=%r 不在已连接的 MCP 服务里(现有: %s)"
+                "指定的 MCP 服务 %r 不在已连接的 MCP 服务里(现有: %s)"
                 % (wanted, ", ".join(names) or "无")
             )
         return wanted, table[wanted]
     if not names:
         raise McpError("AstrBot 里没有任何已连接的 MCP 服务")
     if len(names) > 1:
-        raise McpError(
-            "有 %d 个 MCP 服务(%s),必须显式配置 mcp_server_name"
+        raise McpAmbiguousError(
+            "检测到 %d 个 MCP 服务(%s)，无法自动选取。"
+            "本插件一次只能驱动一具实体，请在 AstrBot 的 MCP 配置里只保留一个连接。"
             % (len(names), ", ".join(sorted(names)))
         )
     return names[0], table[names[0]]

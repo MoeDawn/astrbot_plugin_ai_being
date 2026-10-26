@@ -1,105 +1,210 @@
 {
-  "enable": {
-    "description": "启用 AI 实体:轮询 MCP 事件、注入唤醒、同步发言到群",
-    "type": "bool",
-    "default": true,
-    "hint": "关闭后本插件完全不动作,NetherLink 不受影响"
-  },
-  "mcp_server_name": {
-    "description": "AstrBot 里连接 mineflayer MCP 服务时填的名字",
-    "type": "string",
-    "default": "",
-    "hint": "留空则按「只有一个 MCP 服务」自动选取;多于一个时必须填,否则不启动轮询"
-  },
   "entity_name": {
     "description": "AI 实体在游戏里的登录名",
     "type": "string",
     "default": "",
-    "hint": "留空则无法识别它自己的发言:自唤醒防护与它的死亡/上线播报都会失效,启动时会记一条错误日志。按名字精确匹配,大小写不敏感"
+    "hint": "与 mineflayer 的 MC_USERNAME 一致。按名字精确匹配，不区分大小写。⚠️ 留空则它自己的发言也会进 {events}"
   },
-  "group_id": {
-    "description": "唤醒与同步发往哪个 QQ 群",
+  "server_address": {
+    "description": "MC 服务器地址",
     "type": "string",
     "default": "",
-    "hint": "填群号,不是群名。留空则既不唤醒也不同步,启动时会记一条警告"
+    "hint": "只写进提示词，插件不连它"
   },
-  "qq_platform_id": {
-    "description": "发送用的机器人平台标识",
-    "type": "string",
-    "default": "",
-    "hint": "留空自动在 aiocqhttp 适配器里反查;多机器人部署时务必显式填"
-  },
-  "poll_interval": {
-    "description": "事件轮询间隔(秒)",
+  "server_port": {
+    "description": "MC 服务器端口",
     "type": "int",
-    "default": 60,
-    "hint": "最小 5 秒。太快只是把 MCP 打满,拿不到更快的事件"
+    "default": 25565,
+    "hint": "只写进提示词，插件不连它"
   },
-  "poll_types": {
-    "description": "轮询哪些事件类型",
-    "type": "list",
-    "default": [
-      "chat",
-      "death",
-      "login",
-      "playerJoined",
-      "playerLeft",
-      "whisper"
-    ],
-    "hint": "不必填 health 这类高频类型。death/login 是它自己的死亡与上线,不是别人"
-  },
-  "wake_words": {
-    "description": "游戏内聊天里出现任一即唤醒 AI",
-    "type": "list",
-    "default": [],
-    "hint": "留空 = 不按关键词唤醒(私聊与定时心跳仍然有效)。英文不区分大小写;这是字面匹配,不是语义判断"
-  },
-  "wake_cooldown": {
-    "description": "两次唤醒注入的最小间隔(秒)",
-    "type": "int",
-    "default": 30,
-    "hint": "防止连续刷屏把 LLM 打满;同一次轮询里被点名的多条会合并成一次唤醒"
-  },
-  "wake_template": {
-    "description": "游戏内被点名时发送给 AI 的提示词",
-    "type": "text",
-    "default": "游戏里有动静,可能需要你回应:\n{events}\n先判断是不是在叫你。是的话用 chat 工具在游戏里回一句,必要时也在这里说一声;\n不是的话保持安静,什么都不用做。",
-    "hint": "占位符:{entity}、{events}"
-  },
-  "heartbeat_cron": {
-    "description": "自主心跳周期(分 时 日 月 周)",
-    "type": "string",
-    "default": "*/30 * * * *",
-    "hint": "默认每 30 分钟一次。留空关闭心跳;静默时段内心跳不触发"
-  },
-  "heartbeat_prompt": {
-    "description": "心跳时发送给 AI 的提示词",
-    "type": "text",
-    "default": "现在没有人叫你。先了解现场(血量、饥饿、坐标、背包、附近实体),再做你想做的事。\n优先保命:饥饿值低就吃东西,血量低先回血,装备没穿齐先穿上,工具不够就想办法。\n可以散步、采集、钓鱼、整理箱子、烧矿、跟人、看风景;做完就停。\n只有值得说的才在群里说一句,其余保持沉默。\n不要修改世界,不要使用管理指令。\n最近游戏内动态:\n{events}",
-    "hint": "占位符:{entity} 它的名字、{events} 这段时间的游戏内动态、{state} 在线状态"
-  },
-  "quiet_hours": {
-    "description": "静默时段(整点,含头不含尾)",
-    "type": "string",
-    "default": "0-7",
-    "hint": "留空不静默;静默只压制心跳,被点名仍会唤醒。与 heartbeat_cron 重叠时以本项为准"
-  },
-  "own_event_template": {
-    "description": "它本人死亡 / 上线时同步到群的格式",
-    "type": "string",
-    "default": "{entity} {event}",
-    "hint": "占位符:{entity}、{event}(死亡/进入了服务器)、{detail}(死亡坐标)"
-  },
-  "self_wake_guard": {
-    "description": "自唤醒防护窗口(秒)",
-    "type": "int",
-    "default": 10,
-    "hint": "它刚说过的话在这段时间内不会唤醒自己。用于防止它说的话里恰好带唤醒词时自言自语"
-  },
-  "mcp_timeout": {
-    "description": "单次 MCP 调用超时(秒)",
-    "type": "int",
-    "default": 20,
-    "hint": "超时按失败计,不重置游标"
+  "watch_tasks": {
+    "description": "轮询任务",
+    "type": "template_list",
+    "hint": "每条任务按自己的时间把期间的动态交给 AI。⚠️ session 留空则该条不触发",
+    "templates": {
+      "event_poll": {
+        "name": "事件轮询",
+        "hint": "到点后把这段时间的游戏内动态交给 AI，由她决定说不说话",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "description": "名称",
+            "type": "string",
+            "default": "事件轮询",
+            "hint": "折叠时显示这一条"
+          },
+          "cron": {
+            "description": "时间",
+            "type": "string",
+            "default": "*/30 * * * *",
+            "hint": "5 字段：分 时 日 月 周。如 0 9 * * * = 每天 9 点，*/30 * * * * = 每 30 分钟"
+          },
+          "types": {
+            "description": "推送哪些游戏内动态",
+            "type": "list",
+            "default": [
+              "chat",
+              "whisper",
+              "playerJoined",
+              "playerLeft",
+              "death",
+              "message",
+              "weatherUpdate"
+            ],
+            "hint": "勾选要交给 AI 的动态。默认 7 项够日常用。⚠️ health 每次血量或饥饿变化都触发，entityHurt 与 entitySpawn 在刷怪塔里一趟上百条，开了会挤占其他事件",
+            "render_type": "checkbox",
+            "options": [
+              "chat",
+              "whisper",
+              "playerJoined",
+              "playerLeft",
+              "death",
+              "message",
+              "weatherUpdate",
+              "login",
+              "experience",
+              "goal_reached",
+              "path_reset",
+              "actionBar",
+              "title",
+              "spawn",
+              "respawn",
+              "breath",
+              "heldItemChanged",
+              "health",
+              "entityHurt",
+              "entityDead",
+              "entitySpawn",
+              "entityGone",
+              "itemDrop",
+              "soundEffectHeard",
+              "diggingCompleted",
+              "diggingAborted",
+              "blockPlaced",
+              "mount",
+              "dismount",
+              "sleep",
+              "wake",
+              "windowOpen",
+              "windowClose",
+              "rain",
+              "bossBarCreated",
+              "bossBarDeleted",
+              "resourcePack",
+              "error",
+              "forcedMove",
+              "spawnReset",
+              "playerCollect",
+              "entityEffect",
+              "entityAttach",
+              "entityDetach",
+              "entityEquip",
+              "entitySwingArm",
+              "entitySleep",
+              "entityWake",
+              "entityCrouch",
+              "entityUncrouch",
+              "entityHandSwap",
+              "entityElytraFlew",
+              "entityTaming",
+              "entityTamed",
+              "usedFirework",
+              "goal_updated",
+              "pvp_stopped",
+              "autoeat_start",
+              "autoeat_finish",
+              "autoeat_fail"
+            ],
+            "labels": [
+              "玩家发言",
+              "私聊你",
+              "有人进服",
+              "有人退服",
+              "你自己死了",
+              "系统消息(含跨服与QQ转发)",
+              "天气变化",
+              "你自己上线",
+              "升级",
+              "行动完成",
+              "寻路被重置",
+              "动作栏文字",
+              "标题文字",
+              "你出生或进入世界",
+              "你重生",
+              "氧气变化",
+              "切换手持物",
+              "血量与饥饿",
+              "附近实体受伤",
+              "附近实体死亡",
+              "附近生成实体",
+              "附近实体消失",
+              "附近掉落物",
+              "附近的音效",
+              "挖掉方块",
+              "挖掘中断",
+              "放下方块",
+              "骑上载具",
+              "离开载具",
+              "你上床",
+              "你起床",
+              "打开容器",
+              "关闭容器",
+              "开始或停止下雨",
+              "Boss血条出现",
+              "Boss血条消失",
+              "收到资源包",
+              "客户端错误",
+              "被强制移动",
+              "重生点重置",
+              "你捡到东西",
+              "实体获得状态效果",
+              "实体上车",
+              "实体下车",
+              "实体换装备",
+              "实体挥臂",
+              "实体入睡",
+              "实体醒来",
+              "实体下蹲",
+              "实体起身",
+              "实体换手",
+              "实体鞘翅飞行",
+              "实体驯服中",
+              "实体被驯服",
+              "使用烟花",
+              "行动目标更新",
+              "战斗结束",
+              "开始自动进食",
+              "自动进食完成",
+              "自动进食失败"
+            ]
+          },
+          "prompt": {
+            "description": "内容",
+            "type": "text",
+            "default": "下面是最近的游戏内动态:\n{events}\n\n说明:\n- 以 <名字> 开头的是游戏内玩家发言\n- 带 [服务器名] 的是其他服务器的动态,群里看不到\n- 带 ⌜群名⌟ 的是 QQ 群消息转发进游戏的,群里已经发生过了,不要重复回复\n- 叫的是你才回应,不确定就保持安静\n- 要让游戏里的玩家看到,用 chat 工具说;想同时让群里知道,就在群里也说一句\n- 没有值得说的,调用 ai_being_stay_silent 工具,本次回复不会发送\n  也可以只回复 [静默] 达到同样效果\n",
+            "hint": "占位符：{events} 期间事件、{entity} 它的名字、{server} 服务器地址、{time} 当前时间。要写字面量花括号时写成 {{ 与 }}"
+          },
+          "session": {
+            "description": "投递会话",
+            "type": "string",
+            "default": "",
+            "hint": "形如 aiocqhttp:GroupMessage:123456789。平台标识是面板上机器人的 ID，不是适配器名。⚠️ 留空则该条永不触发"
+          },
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true,
+            "hint": "关闭后到点也不触发"
+          },
+          "quiet_hours": {
+            "description": "静默时段",
+            "type": "string",
+            "default": "",
+            "hint": "整点区间，含头不含尾，如 0-7；支持跨午夜 22-2。留空不静默。只压制定时触发"
+          }
+        }
+      }
+    },
+    "default": []
   }
 }
