@@ -403,6 +403,19 @@ class AIBeingPlugin(Star):
         # 但**不能静默空转**：否则「面板上启用了任务、时间到了却什么都不发生」
         # 在日志里一点痕迹都没有。第一次拦下时说一次，之后每 10 分钟提醒一次。
         if not self._polled_once:
+            # 只在「这一分钟真的有任务想触发」时才出声。调度循环与轮询循环
+            # 同时启动，前者往往先跑一轮 —— 那时第一次轮询还没返回，无条件
+            # 警告会变成每次启动都刷一条噪声（2026-10-27 实测）。
+            self._refresh_tasks()
+            moment = datetime.now()
+            wanted = [
+                task for task in self._tasks_obj
+                if task.enabled and str(task.session or "").strip()
+                and ap_cron_valid(task.cron) and ap_cron.matches(task.cron, moment)
+                and not ap_config.quiet_now(task.quiet_hours, moment.hour)
+            ]
+            if not wanted:
+                return
             now = time.monotonic()
             warn_at = getattr(self, "_gate_warn_at", 0.0)
             if now >= warn_at:
