@@ -49,6 +49,10 @@ DEFAULT_PROMPT = """下面是最近的游戏内动态:
 
 TEMPLATE_KEY = "event_poll"
 
+# 它不在游戏里时怎么处理。annotate = 照常触发但说明离线，skip = 跳过不触发。
+OFFLINE_ANNOTATE = "annotate"
+OFFLINE_SKIP = "skip"
+
 
 @dataclass(frozen=True)
 class WatchTask:
@@ -60,7 +64,9 @@ class WatchTask:
     session: str
     enabled: bool
     quiet_hours: str
-    source: str = "config"
+    offline_policy: str = "annotate"   # annotate | skip
+    source: str = "config"          # config | ai，由 created_by 推出
+    created_by: str = ""            # 空 = 手填，ai = AI 建立
 
 
 @dataclass(frozen=True)
@@ -104,6 +110,12 @@ def _as_str_list(raw):
     return out
 
 
+def _offline_policy(raw) -> str:
+    """`annotate`（默认）或 `skip`；非法值一律回退 annotate。"""
+    value = _text(raw).lower()
+    return OFFLINE_SKIP if value == OFFLINE_SKIP else OFFLINE_ANNOTATE
+
+
 def make_id(name: str, used: set) -> str:
     """任务 id 由规范化名字生成；重名追加 `#2`、`#3`。
 
@@ -129,6 +141,7 @@ def build_task(entry, used_names) -> WatchTask | None:
         return None
     name = _text(entry.get("name"), DEFAULT_NAME)
     types = tuple(_as_str_list(entry.get("types"))) or DEFAULT_TYPES
+    created_by = _text(entry.get("created_by")).lower()
     return WatchTask(
         id=make_id(name, used_names),
         name=name,
@@ -138,7 +151,9 @@ def build_task(entry, used_names) -> WatchTask | None:
         session=_text(entry.get("session")),
         enabled=bool(entry.get("enabled", True)),
         quiet_hours=_text(entry.get("quiet_hours")),
-        source="config",
+        offline_policy=_offline_policy(entry.get("offline_policy")),
+        source="ai" if created_by == "ai" else "config",
+        created_by=created_by,
     )
 
 
@@ -183,3 +198,20 @@ def quiet_now(spec: str, hour: int) -> bool:
     if lo < hi:
         return lo <= hour < hi
     return hour >= lo or hour < hi
+
+
+def to_entry(task: WatchTask) -> dict:
+    """把任务序列化成 `watch_tasks` 的一个条目（写回配置用）。"""
+    return {
+        "__template_key": TEMPLATE_KEY,
+        "name": task.name,
+        "cron": task.cron,
+        "types": list(task.types),
+        "prompt": task.prompt,
+        "session": task.session,
+        "enabled": bool(task.enabled),
+        "quiet_hours": task.quiet_hours,
+        "offline_policy": task.offline_policy,
+        "created_by": task.created_by,
+    }
+

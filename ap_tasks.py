@@ -20,15 +20,17 @@ except ImportError:  # 插件以顶层模块方式加载时
     import ap_cron
 
 
-def merge(configured, ai_tasks, toggles) -> list:
-    """配置任务在前、AI 任务在后；`toggles` 覆盖启用状态。"""
-    toggles = toggles or {}
-    merged = []
-    for task in list(configured or []) + list(ai_tasks or []):
-        if task.id in toggles:
-            task = replace(task, enabled=bool(toggles[task.id]))
-        merged.append(task)
-    return merged
+def merge(tasks, toggles) -> list:
+    """返回任务列表。
+
+    ⚠️ 任务只有**一份**（配置里的 `watch_tasks`）—— AI 建的任务也写在这里，
+    所以面板上看得见、保存配置也不会冲掉。
+    """
+    # 参数保留只为兼容既有调用点；**配置是唯一权威**。
+    # 以前这里拿 `toggles`（state.json 里的内存覆盖）盖住配置的 `enabled`，
+    # 结果用户在面板上重新启用后仍不触发：配置是开的，toggles 还记着关。
+    # 现在 AI 的开关直接写进配置，`toggles` 不再参与。
+    return list(tasks or [])
 
 
 def due(tasks, moment: datetime, fired_minute=None) -> list:
@@ -61,6 +63,17 @@ def _fired_for(store, key):
         return set()
     return store.get(key, set())
 
+
+def unmark_fired(store, task_id) -> None:
+    """把某条任务从「本分钟已触发」里撤掉，允许它下一分钟重试。
+
+    触发失败（注入异常、配置写回失败）时调它 —— 否则这一分钟就白白跳过了。
+    """
+    if not isinstance(store, dict):
+        return
+    for bucket in store.values():
+        if isinstance(bucket, set):
+            bucket.discard(str(task_id))
 
 def _mark_fired(store, key, task_id):
     if not isinstance(store, dict):
@@ -188,53 +201,6 @@ def _as_int(value) -> int:
 
 
 # ---------------------------------------------------------------- AI 任务
-
-def load_ai_tasks(data_dir) -> list:
-    path = Path(data_dir) / "tasks.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return []
-    entries = raw.get("tasks") if isinstance(raw, dict) else None
-    if not isinstance(entries, list):
-        return []
-    out = []
-    used = set()  # 所有条目共享，避免无 id 的同名任务撞同一个自动 id
-    for entry in entries:
-        task = ap_config.build_task(entry, used)
-        if task is None:
-            continue
-        explicit = str(entry.get("id") or "").strip()
-        if explicit:
-            used.add(explicit)  # 显式 id 也占一个名字，防止后面的自动 id 撞上来
-            out.append(replace(task, id=explicit, source="ai"))
-        else:
-            out.append(replace(task, source="ai"))
-    return out
-
-
-def save_ai_tasks(data_dir, tasks) -> None:
-    path = Path(data_dir) / "tasks.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"tasks": [
-        {
-            "id": task.id,
-            "name": task.name,
-            "cron": task.cron,
-            "types": list(task.types),
-            "prompt": task.prompt,
-            "session": task.session,
-            "enabled": task.enabled,
-            "quiet_hours": task.quiet_hours,
-            "source": "ai",
-        }
-        for task in tasks or []
-    ]}
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
 
 def enabled_types(tasks) -> list:
     """所有启用任务的类型并集。空列表 ⇒ 调用方不该轮询。"""

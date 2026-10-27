@@ -58,6 +58,12 @@ SILENT_FLAG = "ai_being_silent"
 # 连续这么多次读取失败后，丢弃 client 重新解析（MCP 可能换了连接）
 CLIENT_DROP_AFTER_FAILURES = 3
 
+# 单次 MCP 调用的超时（秒）。以前是配置项 `mcp_timeout`，随 16 项配置一起删了。
+MCP_TIMEOUT_SECONDS = 20
+
+# 连接状态的缓存时长。同一分钟里多个任务只查一次。
+STATUS_CACHE_SECONDS = 10
+
 
 def chain_is_silent(chain) -> bool:
     """整条回复只有一个纯文本组件，且内容就是静默哨兵。"""
@@ -71,13 +77,15 @@ def chain_is_silent(chain) -> bool:
 class AIBeingPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
-        self.config_obj = ap_config.load(config or {})
+        # `self._config` 是 AstrBot 的 AstrBotConfig（dict 子类，可写回磁盘）；
+        # `config_obj` 是它启动时的解析快照，只用于标量项（entity_name 等）。
+        self._config = config if config is not None else {}
+        self.config_obj = ap_config.load(self._config)
         # ⚠️ get_astrbot_plugin_data_path() 返回 **str**，必须先包成 Path
         self.data_dir = Path(get_astrbot_plugin_data_path()) / "ai_being"
         self._state = ap_tasks.StateStore(self.data_dir)
         self._state.load()
         self._buffer = ap_buffer.Buffer()
-        self._ai_tasks = []
         self._tasks_obj = []
         self._fired = {}
         self._client = None
@@ -86,6 +94,8 @@ class AIBeingPlugin(Star):
         self._next_resolve_at = 0.0
         self._poll_failures = 0
         self._polled_once = False
+        self._gate_warn_at = 0.0
+        self._status_cache = None      # (expires_at, status_dict|None)
         self._tasks = []
         self._stopping = asyncio.Event()
         self._injected = []
@@ -197,11 +207,44 @@ class AIBeingPlugin(Star):
 
     # ------------------------------------------------------------ 任务
 
+    def _live_tasks(self):
+        """从**当前**配置对象解析任务（不是启动快照）。
+
+        AI 建的任务写进 `watch_tasks` 后，这条路径立刻能看到；
+        面板保存配置时也会带着它们一起落盘。
+        """
+        try:
+            return ap_config.load(dict(self._config)).tasks
+        except Exception:  # noqa: BLE001
+            return ap_config.load({}).tasks
+
+    def _persist_tasks(self, entries) -> bool:
+        """把 `watch_tasks` 写回配置并落盘。返回是否成功。
+
+        ⚠️ 用 AstrBot 的 `save_config`（原子写 + 版本号），不要自己 open/write ——
+            面板与插件同时写时会互相覆盖，那条路径有锁。
+        """
+        try:
+            self._config["watch_tasks"] = list(entries)
+            saver = getattr(self._config, "save_config", None)
+            if saver is None:
+                logger.warning(
+                    "AI 实体: 配置对象不支持写回，任务只存在于本次运行"
+                )
+                return False
+            saver()
+            return True
+        except Exception as error:  # noqa: BLE001
+            logger.error("AI 实体: 写回配置失败: %s" % error)
+            return False
+
     def _refresh_tasks(self) -> None:
-        self._ai_tasks = ap_tasks.load_ai_tasks(self.data_dir)
-        merged = ap_tasks.merge(
-            self.config_obj.tasks, self._ai_tasks, self._state.toggles()
-        )
+        # 任务只有一份来源：配置里的 `watch_tasks`。AI 建的任务也写在那里，
+        # 所以面板上看得见，面板保存配置也不会把它冲掉。
+        #
+        # ⚠️ 每次从 `self._config`（即 AstrBot 的 AstrBotConfig 对象）重新解析，
+        #    而不是缓存 `config_obj.tasks`：AI 建任务写的是前者，后者是启动快照。
+        merged = ap_tasks.merge(self._live_tasks(), self._state.toggles())
         self._tasks_obj = [task for task in merged if ap_cron_valid(task.cron)]
         self._state.ensure_watermarks(
             self._tasks_obj, max(self._state.cursor, self._buffer.max_seq())
@@ -278,7 +321,7 @@ class AIBeingPlugin(Star):
         while pages < MAX_PAGES_PER_TICK:
             try:
                 page = await ap_mcp.get_events(
-                    self._client, since, types, POLL_LIMIT, 20
+                    self._client, since, types, POLL_LIMIT, MCP_TIMEOUT_SECONDS
                 )
             except ap_mcp.McpError as error:
                 logger.warning("AI 实体: 读取事件失败: %s" % error)
@@ -324,47 +367,96 @@ class AIBeingPlugin(Star):
                     )
             since = next_since
             self._state.cursor = since
-            self._state.save()
             if len(page.get("events") or []) < POLL_LIMIT:
                 break
             pages += 1
         if dropped:
             logger.warning("AI 实体: 事件缓冲溢出，中间有一段动态丢失")
             self._state.mark_dropped_until(next_since)
+        # ⚠️ 只在整轮结束后写一次盘。以前每翻一页写一次，是**同步**文件 IO，
+        #    直接压在事件循环上；单页时行为不变，多页时少几次阻塞。
+        try:
+            self._state.save()
+        except Exception as error:  # noqa: BLE001
+            logger.warning("AI 实体: 保存游标失败(忽略): %s" % error)
 
     # ------------------------------------------------------------ 调度
 
     async def _schedule_loop(self):
         while not self._stopping.is_set():
             try:
-                self._schedule_once()
+                await self._schedule_once()
             except asyncio.CancelledError:
                 raise
             except Exception as error:  # noqa: BLE001
                 logger.error("AI 实体: 调度循环异常(继续): %s" % error)
             await self._sleep(SCHEDULE_TICK_SECONDS)
 
-    def _schedule_once(self):
+    async def _schedule_once(self):
         # ⚠️ 一次都没成功轮询过就不触发 —— 否则启动竞态或 MCP 离线时
         #    会用空事件唤醒，且当分钟唯一一次触发被白白用掉。
+        #
+        # 但**不能静默空转**：否则「面板上启用了任务、时间到了却什么都不发生」
+        # 在日志里一点痕迹都没有。第一次拦下时说一次，之后每 10 分钟提醒一次。
         if not self._polled_once:
+            now = time.monotonic()
+            warn_at = getattr(self, "_gate_warn_at", 0.0)
+            if now >= warn_at:
+                self._gate_warn_at = now + 600
+                logger.warning(
+                    "AI 实体: 还没有成功读取过游戏事件,定时任务暂不触发"
+                    "(检查 MCP 连接;恢复后自动开始)"
+                )
             return
-        # ⚠️ 必须每轮重读 `tasks.json` —— AI 自建任务只存在这里，不刷新的
-        #    表现是「AI 建了任务却永不触发」。
         self._refresh_tasks()
         for task in ap_tasks.due(self._tasks_obj, datetime.now(), self._fired):
             try:
-                self._fire(task)
+                await self._fire(task)
             except Exception as error:  # noqa: BLE001
-                # 一个任务炸掉不该带走同一分钟的其余任务 —— `due()` 已经把它们
-                # 全部标记为本分钟触发过，被跳过的要等下一分钟才会重来。
+                # 失败的这条要允许下一分钟重试 —— 不能被 `due()` 的标记卡住
+                ap_tasks.unmark_fired(self._fired, task.id)
                 logger.error("AI 实体: 任务 %r 触发失败: %s" % (task.name, error))
 
-    def _fire(self, task) -> None:
+    async def _connection_status(self):
+        """查它是否在游戏里。**10 秒缓存**，同一分钟多个任务只查一次。
+
+        返回 `(ok, status, detail)`：
+          · `ok=False` 表示**查不出来**（MCP 不通），调用方按「状态未知」处理；
+          · `status` 是服务端的 `disconnected/connecting/online/reconnecting`；
+          · `detail` 是给人读的一句话（断开原因等）。
+        """
+        now = time.monotonic()
+        cached = self._status_cache
+        if cached is not None and now < cached[0]:
+            return cached[1]
+        result = (False, "", "")
+        if self._client is not None:
+            try:
+                payload = await ap_mcp.connection_status(
+                    self._client, MCP_TIMEOUT_SECONDS
+                )
+                raw = str(payload.get("status") or "").strip().lower()
+                reason = str(payload.get("lastEndReason") or "").strip()
+                result = (True, raw, reason)
+            except ap_mcp.McpError as error:
+                logger.warning("AI 实体: 查询连接状态失败: %s" % error)
+        self._status_cache = (now + STATUS_CACHE_SECONDS, result)
+        return result
+
+    async def _fire(self, task) -> None:
         """取事件 → 渲染 → 拼提示词 → 注入 → 推进水位线。
 
         ⚠️ 注入失败时**不推进水位线** —— 这一段动态应当在下一次触发时重来。
         """
+        ok, status, reason = await self._connection_status()
+        offline = ok and status != "online"
+        if offline and task.offline_policy == ap_config.OFFLINE_SKIP:
+            logger.info(
+                "AI 实体: 任务 %r 跳过 —— 当前不在游戏里(%s)"
+                % (task.name, status)
+            )
+            return
+
         watermark = self._state.watermark(task.id)
         # 丢失提示按 seq 区间判定：同一条丢失区间内的所有任务都该看到它
         dropped = self._state.dropped_for(watermark)
@@ -373,7 +465,8 @@ class AIBeingPlugin(Star):
         events, new_watermark = self._buffer.take(
             watermark, list(task.types), limit=200
         )
-        text = self._render_prompt(task, events, dropped)
+        notice = self._offline_notice(ok, status, reason)
+        text = self._render_prompt(task, events, dropped, notice)
         try:
             self._inject_task(task, text)
         except Exception as error:  # noqa: BLE001
@@ -383,6 +476,28 @@ class AIBeingPlugin(Star):
         # 所有启用任务都越过丢失区间后才能清标记 —— 第一个任务成功不代表别人
         self._state.clear_dropped_if_all_passed(self._live_watermarks())
         self._state.save()
+
+    @staticmethod
+    def _offline_notice(ok, status, reason) -> str:
+        """不在游戏里时给 AI 的一句话。在线或查不出来时返回空串。
+
+        🔴 必须让它看见：离线时 `{events}` 与「真的没事发生」长得一模一样，
+        它会以为自己在游戏里站着，然后对着空气说话。
+        """
+        if not ok:
+            return ("(查不到连接状态:MCP 未响应。你现在可能不在游戏里,"
+                    "别假设自己能看到现场)")
+        if status == "online":
+            return ""
+        label = {
+            "disconnected": "已断开",
+            "connecting": "正在连接",
+            "reconnecting": "正在重连",
+        }.get(status, status or "状态未知")
+        line = "(你现在不在游戏里,连接状态:%s" % label
+        if reason:
+            line += ",上次断开原因:%s" % reason
+        return line + "。看不到游戏内动态,别假设自己站在游戏里)"
 
     def _live_watermarks(self):
         """会真正推进水位线的任务（启用且 session 非空）。
@@ -396,11 +511,15 @@ class AIBeingPlugin(Star):
             if t.enabled and str(t.session or "").strip()
         ]
 
-    def _render_prompt(self, task, events, dropped) -> str:
+    def _render_prompt(self, task, events, dropped, notice="") -> str:
         config = self.config_obj
         events_text = ap_events.render_events(
             events, entity_name=config.entity_name, limit=60, dropped=dropped
         )
+        # 离线说明放最前面：`{events}` 为空时它就是唯一的信息来源，
+        # 藏在末尾容易被长提示词淹没。
+        if notice:
+            events_text = notice + chr(10) + events_text
         values = {
             "events": events_text,
             "entity": config.entity_name,
@@ -428,43 +547,6 @@ class AIBeingPlugin(Star):
                 % (platform_id, getattr(meta, "name", "?"))
             )
         ap_inject.commit_task(platform, task.session, text)
-
-    # ------------------------------------------------------------ 静默哨兵
-
-    @filter.on_decorating_result()
-    async def _drop_silent_reply(self, event) -> None:
-        """AI 只回了静默哨兵时，丢弃整条回复，不往群里发。
-
-        🔴 **只对自己合成的调度事件生效**（`ai_being_task` 标记）。群里正常
-        对话不受影响 —— 那里用户问「在吗」她答「[静默]」是真实回复，删掉就是
-        装死。
-
-        ⚠️ 这不是代码替 AI 判断「该不该说话」：判断在提示词里，这里只是把
-        「我决定不说话」这个结论变成一个可执行的动作。定时轮询每分钟都触发，
-        没有这条，群里会被「没有新动静」刷屏。
-        """
-        if not event.get_extra(ap_inject.MARKER_KEY):
-            return
-        if event.get_extra(SILENT_FLAG):
-            chain = getattr(event.get_result(), "chain", None)
-            if chain:
-                chain.clear()
-            logger.info("AI 实体: 本轮静默,回复已丢弃")
-            return
-        result = event.get_result()
-        chain = getattr(result, "chain", None) if result is not None else None
-        if not chain:
-            return
-        # 只认「全是纯文本组件」的回复。用类名而不是 isinstance：
-        #   · 真机上 Plain 是 astrbot.core.message.components.Plain；
-        #   · 这里只需要「有 text、不是图片/At/引用」，用属性判断更稳。
-        if any(type(comp).__name__ != "Plain" for comp in chain):
-            return
-        text = "".join(str(getattr(comp, "text", "") or "") for comp in chain).strip()
-        if text != ap_config.SILENT_TOKEN:
-            return
-        chain.clear()
-        logger.info("AI 实体: 本轮静默,回复已丢弃")
 
     # ------------------------------------------------------------ 出站
 
@@ -517,6 +599,35 @@ class AIBeingPlugin(Star):
         logger.info("AI 实体: 本轮决定沉默，已丢弃")
     # ------------------------------------------------------------ AI 工具
 
+    @filter.llm_tool(name="ai_being_task_run")
+    async def ai_being_task_run(self, event, task_id: str) -> str:
+        """立刻执行一次某个任务,不等它自己的时间表。
+
+        走的是同一条路:取上次触发之后的游戏内动态 → 拼提示词 → 交给你。
+        静默时段不拦手动触发。
+
+        Args:
+            task_id(string): 任务 id,用 ai_being_task_list 查
+        """
+        try:
+            self._refresh_tasks()
+            target = str(task_id or "").strip()
+            if not target:
+                return "任务 id 不能为空。"
+            hit = [t for t in self._tasks_obj if t.id == target]
+            if not hit:
+                return "没有 id 为 %r 的任务。用 ai_being_task_list 查一下。" % task_id
+            task = hit[0]
+            if not task.enabled:
+                return "%r 已停用,先启用再触发。" % target
+            if not str(task.session or "").strip():
+                return "%r 的 session 为空,无处投递。" % target
+            self._fire(task)
+            return "已触发 %r。本次回复按惯例发出。" % target
+        except Exception as error:  # noqa: BLE001
+            return "触发任务出错:%s" % error
+
+
     @filter.llm_tool(name="ai_being_stay_silent")
     async def ai_being_stay_silent(self, event) -> str:
         """这一轮不需要说话:调用本工具后,本次回复不会发到 QQ 群。
@@ -536,7 +647,7 @@ class AIBeingPlugin(Star):
 
     @filter.llm_tool(name="ai_being_task_list")
     async def ai_being_task_list(self, event) -> str:
-        """列出所有事件轮询任务：配置里的与你自己创建的。
+        """列出所有事件轮询任务。
 
         用这些工具安排自己什么时候醒来了解游戏内动态。
         """
@@ -546,15 +657,14 @@ class AIBeingPlugin(Star):
                 return "现在没有任何任务。"
             lines = []
             for task in self._tasks_obj:
-                source = "配置" if task.source == "config" else "自建"
+                source = "自建" if task.created_by == "ai" else "手填"
                 state = "启用" if task.enabled else "停用"
                 lines.append(
                     "- [%s] %s（%s，%s）cron=%s 类型=%s 会话=%s"
                     % (source, task.id, task.name, state, task.cron,
                        ",".join(task.types), task.session or "(空)")
                 )
-            if any(task.source == "ai" for task in self._tasks_obj):
-                lines.append("要改任务只能删了重建（重建会重置水位线）。")
+            lines.append("自建任务可以删;手填的只能停用。改任务等于重建,会重置水位线。")
             return "\n".join(lines)
         except Exception as error:  # noqa: BLE001
             return "查询任务出错：%s" % error
@@ -598,27 +708,27 @@ class AIBeingPlugin(Star):
                 "enabled": True,
                 "quiet_hours": str(quiet_hours or "").strip(),
             }
+            entry["created_by"] = "ai"
             task = ap_config.build_task(entry, set())
-            # ⚠️ 用**规范化后**的 id 同时比对配置任务与自建任务 ——
-            #    只比 name 原文会让空名字/重名绕过检查，撞出两条同 id 任务。
-            existing = {t.id for t in self.config_obj.tasks} | {
-                t.id for t in ap_tasks.load_ai_tasks(self.data_dir)
-            }
+            # ⚠️ 用**规范化后**的 id 比对全部任务 —— 只比 name 原文会让
+            #    空名字/重名绕过检查，撞出两条同 id 任务。
+            existing = {t.id for t in self._live_tasks()}
             if task.id in existing:
-                return "已经有同名任务 %r 了，换个名字或先删掉旧的。" % task.id
-            task = replace(task, id=task.id, source="ai")
-            self._ai_tasks.append(task)
-            ap_tasks.save_ai_tasks(self.data_dir, self._ai_tasks)
+                return "已经有同名任务 %r 了,换个名字或先删掉旧的。" % task.id
+            entries = [ap_config.to_entry(t) for t in self._live_tasks()]
+            entries.append(ap_config.to_entry(task))
+            if not self._persist_tasks(entries):
+                return "任务已建,但写回配置失败;重启后会丢失。"
             self._refresh_tasks()
             self._state.save()
-            return ("已创建任务 %r（cron=%s，投到 %s）。"
-                    "改名等于重建，会重置水位线。" % (task.id, task.cron, task.session))
+            return ("已创建任务 %r(cron=%s,投到 %s)。"
+                    "改动会出现在面板的任务列表里。" % (task.id, task.cron, task.session))
         except Exception as error:  # noqa: BLE001
             return "创建任务出错：%s" % error
 
     @filter.llm_tool(name="ai_being_task_delete")
     async def ai_being_task_delete(self, event, task_id: str) -> str:
-        """删除一个你自己创建的任务。配置文件里的任务删不掉,只能停用。
+        """删除一个你自己创建的任务。手填的任务删不掉,只能停用。
 
         Args:
             task_id(string): 任务 id,用 ai_being_task_list 查
@@ -626,23 +736,24 @@ class AIBeingPlugin(Star):
         try:
             self._refresh_tasks()
             target = str(task_id or "").strip()
-            known = {t.id for t in self._tasks_obj}
-            if target not in known:
+            tasks = self._live_tasks()
+            hit = [t for t in tasks if t.id == target]
+            if not hit:
                 return "没有 id 为 %r 的任务。" % task_id
-            self._ai_tasks = ap_tasks.load_ai_tasks(self.data_dir)
-            kept = [task for task in self._ai_tasks if task.id != target]
-            if len(kept) == len(self._ai_tasks):
-                # 存在但不在自建列表里 ⇒ 是配置任务
-                return ("%r 是配置文件里的任务，删不掉；"
-                        "用 ai_being_task_toggle 停用。" % target)
-            ap_tasks.save_ai_tasks(self.data_dir, kept)
-            self._ai_tasks = kept
+            if hit[0].created_by != "ai":
+                return ("%r 是手填的任务,删不掉;用 ai_being_task_toggle 停用。"
+                        % target)
+            entries = [
+                ap_config.to_entry(t) for t in tasks if t.id != target
+            ]
+            if not self._persist_tasks(entries):
+                return "删除失败:写回配置出错。"
             self._state.forget_task(target)
             self._state.save()
             self._refresh_tasks()
-            return "已删除任务 %r。改任务请删了重建（会重置水位线）。" % target
+            return "已删除任务 %r。" % target
         except Exception as error:  # noqa: BLE001
-            return "删除任务出错：%s" % error
+            return "删除任务出错:%s" % error
 
     @filter.llm_tool(name="ai_being_task_toggle")
     async def ai_being_task_toggle(self, event, task_id: str, enabled: bool) -> str:
@@ -659,9 +770,18 @@ class AIBeingPlugin(Star):
             self._refresh_tasks()
             if not any(t.id == target for t in self._tasks_obj):
                 return "没有 id 为 %r 的任务。用 ai_being_task_list 查一下。" % target
-            value = enabled if isinstance(enabled, bool) else str(enabled).strip().lower() in ("true", "1", "yes", "开")
-            self._state.set_enabled(target, value)
-            self._state.save()
+            value = enabled if isinstance(enabled, bool) else                 str(enabled).strip().lower() in ("true", "1", "yes", "开")
+            # 🔴 直接改**配置**。以前写进 state.json 的 toggles，那是零件内存
+            #    覆盖 —— 用户在面板上重新启用后，配置是开的、toggles 还记着关，
+            #    时间到了也不触发，且没有任何日志。
+            entries = []
+            for task in self._live_tasks():
+                entry = ap_config.to_entry(task)
+                if task.id == target:
+                    entry["enabled"] = value
+                entries.append(entry)
+            if not self._persist_tasks(entries):
+                return "切换失败:写回配置出错。"
             self._refresh_tasks()
             return "任务 %r 已%s。" % (target, "启用" if value else "停用")
         except Exception as error:  # noqa: BLE001

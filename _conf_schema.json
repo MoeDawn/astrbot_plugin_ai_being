@@ -20,7 +20,7 @@
   "watch_tasks": {
     "description": "轮询任务",
     "type": "template_list",
-    "hint": "每条任务按自己的时间把期间的动态交给 AI。⚠️ session 留空则该条不触发",
+    "hint": "每条任务按自己的时间把期间的动态交给 AI。AI 建的任务也在这里。⚠️ session 留空则该条不触发",
     "templates": {
       "event_poll": {
         "name": "事件轮询",
@@ -201,6 +201,27 @@
             "type": "string",
             "default": "",
             "hint": "整点区间，含头不含尾，如 0-7；支持跨午夜 22-2。留空不静默。只压制定时触发"
+          },
+          "created_by": {
+            "description": "创建者",
+            "type": "string",
+            "default": "",
+            "invisible": true,
+            "hint": "ai = 由 AI 建立,它可以自己删;留空 = 手填,只能停用"
+          },
+          "offline_policy": {
+            "description": "它不在游戏里时怎么办",
+            "type": "string",
+            "options": [
+              "annotate",
+              "skip"
+            ],
+            "labels": [
+              "照常触发并告知不在线",
+              "跳过不触发"
+            ],
+            "default": "annotate",
+            "hint": "触发前先查一次连接状态。照常触发:提示词里会写明不在线,AI 不会以为自己在游戏里;跳过:这一轮直接不触发。⚠️ 连接状态查不出来时按「不在线」处理"
           }
         }
       }

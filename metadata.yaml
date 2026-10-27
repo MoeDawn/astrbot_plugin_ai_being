@@ -1,6 +1,6 @@
 name: astrbot_plugin_ai_being
 author: MoeDawn
-version: 0.1.0
+version: 0.1.1
 desc: 按任务设定的时间把 Minecraft 里的动态交给 AI 实体，由她决定是否回应
 display_name: NetherLink AI 实体
 main: main.py

@@ -54,6 +54,10 @@ def _parse_field(expr, lo, hi):
                 start = end = int(base)
             except ValueError:
                 return None
+            if "/" in part:
+                # `a/n` 是「a 到 hi，每 n 个」—— 与 `*` 同源的分支，
+                # 不能退化成只取 {a}（以前就是这样，注释与实现不符）。
+                end = hi
         if start < lo or end > hi or start > end:
             return None
         out.update(range(start, end + 1, step))

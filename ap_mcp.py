@@ -138,3 +138,11 @@ async def get_events(client, since: int, types, limit: int, timeout: float) -> d
         "dropped": bool(payload.get("dropped", False)),
         "events": events,
     }
+
+async def connection_status(client, timeout: float) -> dict:
+    """查连接状态：`{status, username, lastEndReason, ...}`。
+
+    服务端每次都会给完整字段（未连接时 `username` 可能是上次的配置值、
+    `position` 为 null）。这里只挑我们判断要用的，其余原样留着。
+    """
+    return await call_tool(client, "get_connection_status", {}, timeout)
