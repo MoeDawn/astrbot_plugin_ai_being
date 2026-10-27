@@ -323,29 +323,54 @@ def render_event(ev: dict) -> str:
     return ""
 
 
-def render_events(events, entity_name="", limit=60, dropped=False) -> str:
-    """渲染成多行文本。**新的在后**，超出 `limit` 时丢最旧的。"""
+
+def _collapse(lines, limit):
+    """相邻完全相同的行合并成 `line (xN)`。只在相邻时合并 —— 中间夹了别的
+    动态就该各算各的。"""
+    out = []
+    for line in lines:
+        if out and out[-1][0] == line:
+            out[-1][1] += 1
+        else:
+            out.append([line, 1])
+    rendered = [
+        (line if count == 1 else "%s (x%d)" % (line, count))
+        for line, count in out
+    ]
+    omitted = 0
+    if limit and len(rendered) > limit:
+        omitted = len(rendered) - limit
+        rendered = rendered[-limit:]
+    if omitted:
+        rendered.append("(更早的 %d 条动态已省略)" % omitted)
+    return rendered
+
+
+def render_events(events, entity_name="", limit=120, dropped=False) -> str:
+    """渲染成多行文本。**新的在后**，超出 `limit` 时丢最旧的。
+
+    ⚠️ 相邻完全相同的行合并成 `(xN)`。天气是最容易刷屏的一类 —— 一次天气变化
+    会连发两条（reason 7 雨量 / reason 8 雷暴），渲染出来的文字一样，靠这条合并。
+    60 条的窗口一旦被它占满，玩家的聊天就看不见了。
+    """
     try:
         limit = max(0, int(limit))
     except (TypeError, ValueError):
         limit = 0
     lines = []
     for ev in events or []:
+        if not isinstance(ev, dict):
+            continue
         if is_self(ev, entity_name):
             continue
         line = render_event(ev)
         if line:
             lines.append(line)
-    omitted = 0
-    if limit and len(lines) > limit:
-        omitted = len(lines) - limit
-        lines = lines[-limit:]
-    if not lines:
+    rendered = _collapse(lines, limit)
+    if not rendered:
         out = EMPTY_TEXT
     else:
-        out = "\n".join(lines)
-        if omitted:
-            out += "\n(更早的 %d 条动态已省略)" % omitted
+        out = chr(10).join(rendered)
     if dropped:
-        out += "\n" + DROPPED_NOTE
+        out += chr(10) + DROPPED_NOTE
     return out

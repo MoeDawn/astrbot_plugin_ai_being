@@ -61,6 +61,10 @@ CLIENT_DROP_AFTER_FAILURES = 3
 # 单次 MCP 调用的超时（秒）。以前是配置项 `mcp_timeout`，随 16 项配置一起删了。
 MCP_TIMEOUT_SECONDS = 20
 
+# 送进提示词的动态行数上限。60 行太容易被高频事件（天气、实体）占满，
+# 玩家的聊天被挤出去就看不见了。
+RENDER_LINE_LIMIT = 120
+
 # 连接状态的缓存时长。同一分钟里多个任务只查一次。
 STATUS_CACHE_SECONDS = 10
 
@@ -514,7 +518,8 @@ class AIBeingPlugin(Star):
     def _render_prompt(self, task, events, dropped, notice="") -> str:
         config = self.config_obj
         events_text = ap_events.render_events(
-            events, entity_name=config.entity_name, limit=60, dropped=dropped
+            events, entity_name=config.entity_name,
+            limit=RENDER_LINE_LIMIT, dropped=dropped,
         )
         # 离线说明放最前面：`{events}` 为空时它就是唯一的信息来源，
         # 藏在末尾容易被长提示词淹没。
