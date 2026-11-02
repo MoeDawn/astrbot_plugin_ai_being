@@ -1,3 +1,11 @@
+## v0.1.3
+
+### 文档:新增 MCP 服务部署说明
+
+上游 mineflayer 还没发布支持 MC 26.3 的版本，README 里补了 package.json
+（用 `overrides` 拉 GitHub 最新提交）与 AstrBot MCP 服务的启动配置示例。
+不改代码。
+
 # 更新日志
 
 ## v0.1.2

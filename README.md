@@ -4,7 +4,59 @@
 
 本插件只做事件轮询。群服互通全部由 [NetherLink](https://github.com/MoeDawn/astrbot_plugin_netherlink) 负责：玩家聊天推群、QQ 群消息转发进游戏、跨服转发、它自己的发言进群、它在群里的回复进游戏。两个插件配套使用，单独装本插件收不到也发不出群消息。
 
-依赖 awesome-mineflayer-mcp 服务器。
+## MCP 服务部署
+
+上游 mineflayer 还没发布支持 MC 26.3 的版本，npm 上的 awesome-mineflayer-mcp 依赖旧版 mineflayer，连不上 26.x 服务器。装的时候用 `overrides` 把 mineflayer 换成 GitHub 最新提交。
+
+在任意目录建 `package.json`：
+
+```json
+{
+  "name": "mcp_mf",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "dependencies": {
+    "awesome-mineflayer-mcp": "^1.3.2",
+    "canvas": "^3.2.3",
+    "playwright-core": "^1.64.1",
+    "prismarine-viewer": "^1.33.0"
+  },
+  "overrides": {
+    "mineflayer": "github:PrismarineJS/mineflayer"
+  }
+}
+```
+
+```bash
+npm install
+```
+
+装完后入口在 `node_modules/awesome-mineflayer-mcp/dist/index.js`。
+
+AstrBot 的「插件市场」旁的「MCP」页里新建服务，启动方式选命令（Linux 部署示例，Windows 换成实际路径）：
+
+```json
+{
+  "command": "node",
+  "args": [
+    "/AstrBot/data/mcp_mf/node_modules/awesome-mineflayer-mcp/dist/index.js"
+  ],
+  "env": {
+    "MCP_DEFAULT_HOST": "服务器地址",
+    "MCP_DEFAULT_PORT": "25565",
+    "MCP_DEFAULT_USERNAME": "Alynya",
+    "MCP_DEFAULT_AUTH": "offline",
+    "MCP_DEFAULT_VERSION": "26.1",
+    "MCP_DEFAULT_AUTO_RECONNECT": "true",
+    "MCP_DISABLE_GROUPS": "villager,enchanting,raw,macros",
+    "MCP_THROTTLE_MS": "500",
+    "MCP_EVENT_BUFFER": "8000",
+    "MCP_CHARACTER_LIMIT": "60000"
+  }
+}
+```
+
+`MCP_DEFAULT_*` 五项要与插件配置的 `entity_name`、`server_address`、`server_port` 一致。配好后服务启动即自动登录。
 
 ## 功能
 
